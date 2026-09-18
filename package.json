@@ -1,0 +1,20 @@
+{
+  "name": "web-qa-jev-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker that crawls a web app, triages what it finds with typesafe/jev, confirms real issues with a vision model, and files deduped GitHub Issues.",
+  "scripts": {
+    "dev": "wrangler dev --remote",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^1.0.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260915.1",
+    "typescript": "^5.6.2",
+    "wrangler": "^4.132.0"
+  }
+}

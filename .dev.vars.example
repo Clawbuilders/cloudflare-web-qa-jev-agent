@@ -1,0 +1,7 @@
+# Copy to .dev.vars for local `wrangler dev --remote` testing. Never commit the real file.
+
+TARGET_URL=https://example.com
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+GITHUB_OWNER=your-org-or-username
+GITHUB_REPO=your-repo-name
+RUN_TOKEN=some-random-string

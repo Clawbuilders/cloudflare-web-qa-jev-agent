@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "web-qa-jev-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "browser": {
+    "binding": "BROWSER"
+  },
+  "triggers": {
+    "crons": ["0 14 * * *"]
+  },
+  "vars": {
+    "MAX_PAGES": "3",
+    "ESCALATION_FLOOR": "0.6",
+    "ISSUE_LABEL": "web-qa-jev-agent"
+  }
+}
