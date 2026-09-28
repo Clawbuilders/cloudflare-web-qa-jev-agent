@@ -1,8 +1,8 @@
 {
-  "name": "web-qa-jev-agent",
-  "version": "1.0.0",
+  "name": "cloudflare-web-qa-jev-agent",
+  "version": "2.0.0",
   "private": true,
-  "description": "Cloudflare Worker that crawls a web app, triages what it finds with typesafe/jev, confirms real issues with a vision model, and files deduped GitHub Issues.",
+  "description": "Cloudflare Worker that acts like a QA tester (Jev-driven Kitesurf/Chromium routing, Jev-picked action loop), triages findings with typesafe/jev, confirms real issues with a vision model, and files deduped GitHub Issues.",
   "scripts": {
     "dev": "wrangler dev --remote",
     "deploy": "wrangler deploy",

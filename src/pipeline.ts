@@ -9,6 +9,7 @@ export interface RunSummary {
   flagged: number;
   filed: { number: number; url: string; title: string }[];
   duplicates: { issueNumber: number; title: string }[];
+  engineBreakdown: { kitesurf: number; chromium: number };
 }
 
 export async function runPipeline(env: Env): Promise<RunSummary> {
@@ -21,7 +22,21 @@ export async function runPipeline(env: Env): Promise<RunSummary> {
     .map((page, i) => ({ page, triageResult: triageResults[i]! }))
     .filter(({ triageResult }) => triageResult.isRealBug >= floor);
 
-  const summary: RunSummary = { pagesVisited: pages.length, flagged: flagged.length, filed: [], duplicates: [] };
+  const engineBreakdown = pages.reduce(
+    (acc, page) => {
+      acc[page.engine]++;
+      return acc;
+    },
+    { kitesurf: 0, chromium: 0 },
+  );
+
+  const summary: RunSummary = {
+    pagesVisited: pages.length,
+    flagged: flagged.length,
+    filed: [],
+    duplicates: [],
+    engineBreakdown,
+  };
   if (flagged.length === 0) return summary;
 
   const openIssues = await listOpenIssues(env);

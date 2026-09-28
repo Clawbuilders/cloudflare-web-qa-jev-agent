@@ -19,6 +19,8 @@
   "vars": {
     "MAX_PAGES": "3",
     "ESCALATION_FLOOR": "0.6",
-    "ISSUE_LABEL": "web-qa-jev-agent"
+    "ISSUE_LABEL": "web-qa-jev-agent",
+    "ACTION_BUDGET": "4",
+    "CHROMIUM_ONLY_PATTERNS": ""
   }
 }

@@ -34,6 +34,7 @@ export async function triage(env: Env, page: PageSignals): Promise<TriageResult>
     failed_requests: page.failedRequests,
     page_errors: page.pageErrors,
     text_excerpt: page.textExcerpt,
+    actions_attempted: page.actionsAttempted,
   };
 
   const response = (await env.AI.run("typesafe/jev", {

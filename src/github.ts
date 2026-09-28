@@ -7,7 +7,7 @@ function headers(env: Env): HeadersInit {
     Authorization: `Bearer ${env.GITHUB_TOKEN}`,
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "web-qa-jev-agent",
+    "User-Agent": "cloudflare-web-qa-jev-agent",
   };
 }
 
@@ -109,11 +109,14 @@ export async function createIssue(env: Env, finding: Finding): Promise<{ number:
   const body = [
     finding.description,
     "",
-    `**Severity:** ${finding.severityLabel}  |  **Category:** ${finding.category}`,
+    `**Severity:** ${finding.severityLabel}  |  **Category:** ${finding.category}  |  **Engine:** ${finding.engine}`,
     `**Page:** ${finding.url}`,
+    finding.actionsAttempted.length > 0
+      ? `**Actions attempted:** ${finding.actionsAttempted.join("; ")}`
+      : "",
     imageUrl ? `\n![screenshot](${imageUrl})` : "",
     "",
-    "_Filed automatically by [web-qa-jev-agent](https://github.com/Clawbuilders/web-qa-jev-agent)._",
+    "_Filed automatically by [cloudflare-web-qa-jev-agent](https://github.com/Clawbuilders/cloudflare-web-qa-jev-agent)._",
   ]
     .filter(Boolean)
     .join("\n");

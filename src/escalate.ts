@@ -16,8 +16,10 @@ export async function draftFinding(
     `You are a QA engineer writing up a bug report from an automated crawl.
 Page: ${page.url}
 Title: ${page.title}
+Engine: ${page.engine}
 Detected category: ${triageResult.category}
 Detected severity: ${triageResult.severityLabel}
+Actions the automated tester attempted on this page: ${JSON.stringify(page.actionsAttempted.slice(0, 8))}
 Console errors: ${JSON.stringify(page.consoleErrors.slice(0, 5))}
 Failed requests: ${JSON.stringify(page.failedRequests.slice(0, 5))}
 Page errors: ${JSON.stringify(page.pageErrors.slice(0, 5))}
@@ -50,5 +52,7 @@ its presence generically instead.`,
     severityLabel: triageResult.severityLabel,
     category: triageResult.category,
     screenshot: page.screenshot,
+    engine: page.engine,
+    actionsAttempted: page.actionsAttempted,
   };
 }
