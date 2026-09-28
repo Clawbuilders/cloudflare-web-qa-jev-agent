@@ -24,6 +24,29 @@ app repo, which has the full architecture writeup and the alternatives
 
 ## How it works
 
+```mermaid
+flowchart TD
+    trigger(["Cron (daily) or GET /run?token=..."]) --> router
+
+    subgraph perpage ["Per page — up to MAX_PAGES, BFS from TARGET_URL"]
+        router{{"router.ts<br/>Jev picks the engine"}}
+        router -->|"plain content,<br/>no auth needed"| kitesurf["Kitesurf session<br/>(cheap default)"]
+        router -->|"auth / WebGL /<br/>bot-challenge"| chromium["Chromium via<br/>Browser Rendering"]
+        kitesurf -.->|"session throws<br/>(fail-up)"| chromium
+        kitesurf --> actionloop
+        chromium --> actionloop{{"action-loop.ts<br/>Jev picks next click/type"}}
+        actionloop -->|"repeat up to<br/>ACTION_BUDGET"| actionloop
+        actionloop --> signals["Collect signals:<br/>console errors, failed requests,<br/>page errors, screenshot, actions log"]
+    end
+
+    signals --> triage{{"triage.ts<br/>Jev: real bug? severity? category?"}}
+    triage -->|"below<br/>ESCALATION_FLOOR"| done(["nothing filed"])
+    triage -->|"flagged"| vision["escalate.ts<br/>vision model confirms + writes up"]
+    vision --> dedup{{"github.ts<br/>Jev: matches an open Issue?"}}
+    dedup -->|"yes"| comment(["comment on<br/>existing Issue"])
+    dedup -->|"no, new"| create(["file new GitHub Issue<br/>(screenshot + engine + actions)"])
+```
+
 ```
 Cron Trigger (daily) or GET /run?token=...
   → For each same-origin page (up to MAX_PAGES, BFS from TARGET_URL):
