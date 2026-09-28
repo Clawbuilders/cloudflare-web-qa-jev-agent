@@ -26,7 +26,7 @@ app repo, which has the full architecture writeup and the alternatives
 
 ```mermaid
 flowchart TD
-    trigger(["Cron (daily) or GET /run?token=..."]) --> router
+    trigger(["Cron (monthly) or GET /run?token=..."]) --> router
 
     subgraph perpage ["Per page — up to MAX_PAGES, BFS from TARGET_URL"]
         router{{"router.ts<br/>Jev picks the engine"}}
@@ -48,7 +48,7 @@ flowchart TD
 ```
 
 ```
-Cron Trigger (daily) or GET /run?token=...
+Cron Trigger (monthly) or GET /run?token=...
   → For each same-origin page (up to MAX_PAGES, BFS from TARGET_URL):
       1. Engine router (src/router.ts): one Jev call picks Kitesurf (cheap
          default, ~3-7x less CPU/memory than Chromium) or Chromium via
@@ -119,7 +119,7 @@ a public bug report.
 
 ## Repo layout
 
-- `src/index.ts` — Worker entrypoint: `scheduled()` (daily cron) and
+- `src/index.ts` — Worker entrypoint: `scheduled()` (monthly cron) and
   `fetch()` (the `/run` manual-trigger route)
 - `src/explorer.ts` — orchestrates the crawl: engine routing, the action
   loop, signal collection, and the Kitesurf→Chromium fail-up cascade
@@ -145,17 +145,30 @@ Click the **Deploy to Cloudflare Workers** button above, or clone and run
 
 ### 2. Enable Browser Rendering
 
-Browser Rendering isn't on by default — enable it for your account in the
+Browser Rendering isn't on by default, so enable it for your account in the
 Cloudflare dashboard (**Workers & Pages → Browser Rendering**) if you
 haven't used it before. Free-tier limits matter here: **10 browser-minutes
-a day, 3 concurrent sessions, 6 requests/minute** — plenty for the daily
-cron with a small `MAX_PAGES`, tight if you mash the manual `/run` route
-repeatedly while testing, and tighter still now that the action loop spends
-extra time per page interacting rather than just reading it. `wrangler.json`'s
-`MAX_PAGES` defaults to `3` and is hard-capped at `10` in code; `ACTION_BUDGET`
-defaults to `4` and is hard-capped at `10`. No separate setup is needed for
-Kitesurf — it's a typed option (`{ browser: "kitesurf" }`) on the same
-`BROWSER` binding, not a different binding or API token.
+a day, 3 concurrent sessions, 6 requests/minute.** `wrangler.json` now
+defaults `MAX_PAGES` and `ACTION_BUDGET` to 10 and 10 (both hard-capped at
+10 in code regardless of what's configured), running once a month instead
+of daily: a once-a-month run can afford to spend a full session's worth of
+budget in one go, rather than rationing a small budget across 30 daily
+runs.
+
+This has not been measured against a real deploy. 10 pages times up to 10
+interactions each, with every interaction involving a DOM snapshot, a Jev
+call, and a click or type with its own wait, could plausibly approach or
+exceed the 10-browser-minute/day cap in a single run; watch the first real
+run's logs for this. If it happens, lower `ACTION_BUDGET` first (each
+interaction is the expensive part), then `MAX_PAGES` if needed. Kitesurf
+being the default engine doesn't necessarily help here: Cloudflare's own
+benchmarks show it uses less CPU and memory than Chromium but runs 1.7 to
+1.8 times slower in wall-clock time, and the free-tier cap is a wall-clock
+browser-minutes budget, not a CPU budget.
+
+No separate setup is needed for Kitesurf itself: it's a typed option
+(`{ browser: "kitesurf" }`) on the same `BROWSER` binding, not a different
+binding or API token.
 
 ### 3. Accept the vision model's license
 
@@ -236,12 +249,36 @@ npm run dev   # wrangler dev --remote — Browser Rendering does NOT work in loc
 
 ## Schedule
 
-The cron in `wrangler.json` (`0 14 * * *`, UTC) runs once daily. Adjust it,
-or lean on the `/run` route for on-demand checks — both call the exact same
+The cron in `wrangler.json` (`0 14 1 * *`, UTC) runs once a month, on the
+1st. Standard cron has no native "every 4 weeks" (there's no week-counter
+field, only day-of-month/month/day-of-week), so a fixed day each month is
+the practical equivalent, roughly every 4.3 weeks rather than exactly 4.
+Chosen deliberately over a daily run: a site's content and behavior mostly
+doesn't change day to day, so a daily crawl with a small budget was mostly
+re-testing the same few things over and over (see "Limitations" below, in
+particular the no-memory-across-runs gap); running less often but with the
+budget maxed out gets more real coverage per run instead. Adjust the cron,
+or lean on the `/run` route for on-demand checks; both call the exact same
 pipeline.
 
 ## Limitations (read before treating this as a real QA tool)
 
+- **The action loop can get stuck repeating the same click.** The Jev
+  decision call in `src/action-loop.ts` is *told* to "prefer unexplored
+  elements over ones already tried this run," but the `state` it's given
+  each step (`{ goal, step, of }`) carries no record of what was already
+  clicked or typed into. `actionsAttempted` is tracked but never fed back
+  into the next step's decision. If the same element keeps scoring
+  highest, nothing stops it from being picked every step for the whole
+  `ACTION_BUDGET`. Not fixed yet; the fix is straightforward (pass the
+  running `actionsAttempted` list into `state`), just not done.
+- **No memory across runs, only across findings.** This Worker has no KV,
+  Durable Object, or database, so nothing persists between invocations
+  except the GitHub Issues themselves, which stop the same bug from being
+  *filed* twice (`src/github.ts`'s dedup check) but don't influence which
+  pages or elements get tried next time. Every run starts from the same
+  `TARGET_URL` with the same BFS order, so on an unchanging site, runs can
+  plausibly retread a lot of the same ground.
 - **Text-only triage/routing/navigation, vision-only confirmation.** Jev
   never sees pixels — the vision model only sees a JPEG screenshot per
   flagged page, not a full interaction trace. Subtle visual bugs a real

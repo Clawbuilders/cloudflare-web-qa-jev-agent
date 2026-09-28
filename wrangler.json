@@ -14,13 +14,13 @@
     "binding": "BROWSER"
   },
   "triggers": {
-    "crons": ["0 14 * * *"]
+    "crons": ["0 14 1 * *"]
   },
   "vars": {
-    "MAX_PAGES": "3",
+    "MAX_PAGES": "10",
     "ESCALATION_FLOOR": "0.6",
     "ISSUE_LABEL": "web-qa-jev-agent",
-    "ACTION_BUDGET": "4",
+    "ACTION_BUDGET": "10",
     "CHROMIUM_ONLY_PATTERNS": ""
   }
 }
