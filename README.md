@@ -26,30 +26,40 @@ app repo, which has the full architecture writeup and the alternatives
 
 ```mermaid
 flowchart TD
-    trigger(["Cron (monthly) or GET /run?token=..."]) --> router
+    trigger(["Cron (monthly, or your own cadence) or GET /run?token=..."]) --> coverageRead
 
-    subgraph perpage ["Per page — up to MAX_PAGES, BFS from TARGET_URL"]
-        router{{"router.ts<br/>Jev picks the engine"}}
+    coverageRead["coverage.ts<br/>read the KV coverage index"] --> queuePick["Pick crawl order:<br/>REVISIT_RATE slots to known pages<br/>(previously-flagged first), rest biased<br/>toward never-seen pages"]
+
+    subgraph perpage ["Per page, up to MAX_PAGES"]
+        queuePick --> router{{"router.ts<br/>Jev picks the engine"}}
         router -->|"plain content,<br/>no auth needed"| kitesurf["Kitesurf session<br/>(cheap default)"]
         router -->|"auth / WebGL /<br/>bot-challenge"| chromium["Chromium via<br/>Browser Rendering"]
         kitesurf -.->|"session throws<br/>(fail-up)"| chromium
         kitesurf --> actionloop
-        chromium --> actionloop{{"action-loop.ts<br/>Jev picks next click/type"}}
+        chromium --> actionloop{{"action-loop.ts<br/>Jev picks next click/type,<br/>told each option's history"}}
         actionloop -->|"repeat up to<br/>ACTION_BUDGET"| actionloop
         actionloop --> signals["Collect signals:<br/>console errors, failed requests,<br/>page errors, screenshot, actions log"]
     end
 
     signals --> triage{{"triage.ts<br/>Jev: real bug? severity? category?"}}
-    triage -->|"below<br/>ESCALATION_FLOOR"| done(["nothing filed"])
-    triage -->|"flagged"| vision["escalate.ts<br/>vision model confirms + writes up"]
+    triage --> coverageWrite["coverage.ts<br/>write this run's visits +<br/>action outcomes back to KV"]
+    coverageWrite --> gate{"above<br/>ESCALATION_FLOOR?"}
+    gate -->|"no"| done(["nothing filed"])
+    gate -->|"yes"| vision["escalate.ts<br/>vision model confirms + writes up"]
     vision --> dedup{{"github.ts<br/>Jev: matches an open Issue?"}}
     dedup -->|"yes"| comment(["comment on<br/>existing Issue"])
     dedup -->|"no, new"| create(["file new GitHub Issue<br/>(screenshot + engine + actions)"])
 ```
 
 ```
-Cron Trigger (monthly) or GET /run?token=...
-  → For each same-origin page (up to MAX_PAGES, BFS from TARGET_URL):
+Cron Trigger (monthly by default, change it to fit your project) or GET /run?token=...
+  → Coverage read (src/coverage.ts): one KV read of everything this Worker
+    has crawled before. REVISIT_RATE of MAX_PAGES gets reserved for
+    regression-checking known pages (ones that previously found something
+    first, then the stalest); the rest is biased toward pages never seen
+    before, falling back to known ones only if the site doesn't have
+    enough fresh links to fill the budget.
+  → For each page (up to MAX_PAGES, in that coverage-aware order):
       1. Engine router (src/router.ts): one Jev call picks Kitesurf (cheap
          default, ~3-7x less CPU/memory than Chromium) or Chromium via
          Browser Rendering (escalation) — auth sessions, WebGL/canvas/video,
@@ -59,15 +69,24 @@ Cron Trigger (monthly) or GET /run?token=...
       2. Action loop (src/action-loop.ts): ports the core idea from
          browser-use/jev-ultrafast — one DOM snapshot of visible interactive
          elements per step, one Jev call picks the next indexed action
-         (click / type / "done"), up to ACTION_BUDGET steps. This is what
-         actually exercises forms and buttons instead of only following
-         <a href> links.
+         (click / type / "done"), up to ACTION_BUDGET steps. Each option's
+         description carries its history from the coverage index (never
+         tried / tried N times and clean / tried before and found
+         something), and Jev is told to prefer the genuinely new but not
+         exclusively — a previously-clean element can still break from an
+         unrelated change, so it's worth an occasional re-check, and a
+         previously-flagged element gets real priority to verify the fix
+         held. This is what actually exercises forms and buttons instead
+         of only following <a href> links.
       3. Collect signals: console errors, failed network requests, page
          errors, a text excerpt, a screenshot, and a log of what the action
          loop did.
   → Fast triage: one parallel typesafe/jev call per page — "is this a real
     bug?" (Noul), "how severe?" (Score), "what kind?" (Choice) — now informed
     by what the action loop actually attempted, not just passive signals.
+  → Coverage write (src/coverage.ts): this run's visits and action outcomes
+    get merged back into the KV index before anything gets filed, so the
+    memory update doesn't depend on the rest of the run succeeding.
   → Escalation gate: only pages Jev flags above ESCALATION_FLOOR go further
   → Confirm + draft: a vision model (@cf/meta/llama-3.2-11b-vision-instruct)
     looks at that page's screenshot and writes up the finding
@@ -125,7 +144,12 @@ a public bug report.
   loop, signal collection, and the Kitesurf→Chromium fail-up cascade
 - `src/router.ts` — the per-page Jev call choosing Kitesurf vs. Chromium
 - `src/action-loop.ts` — the per-page Jev-driven action loop (DOM snapshot →
-  Jev picks next element → click/type), ported from `browser-use/jev-ultrafast`
+  Jev picks next element → click/type), ported from `browser-use/jev-ultrafast`,
+  annotated with each element's history from the coverage index
+- `src/coverage.ts` — the cross-run memory: a KV-backed index of pages and
+  actions tried before, used to bias crawl order and inform the action
+  loop's choices (read once at the start of a run, written once after
+  triage)
 - `src/triage.ts` — the per-page "is this a real bug" Jev call
 - `src/escalate.ts` — the vision-model confirm + write-up
 - `src/github.ts` — list/dedup/comment/create against GitHub Issues, plus
@@ -134,7 +158,7 @@ a public bug report.
 - `src/redact.ts` — the secret-scrubbing pass
 - `docs/webmcp-probe.md` — manual steps for probing WebMCP tool support on a
   target site; not wired into the automated pipeline (see that file for why)
-- `wrangler.json` — Worker config (AI + Browser Rendering bindings, cron)
+- `wrangler.json` — Worker config (AI + Browser Rendering + KV bindings, cron)
 
 ## Setup
 
@@ -143,7 +167,24 @@ a public bug report.
 Click the **Deploy to Cloudflare Workers** button above, or clone and run
 `wrangler deploy` yourself (see "Local development" below).
 
-### 2. Enable Browser Rendering
+### 2. Create your own KV namespace for coverage memory
+
+`wrangler.json`'s `kv_namespaces` entry ships with the real namespace ID
+from this repo's own deployed account, since KV namespace IDs are
+account-scoped and a template can't meaningfully commit one that works for
+everyone. If you're deploying your own copy (not just redeploying this
+exact Worker), create your own and swap the ID in:
+
+```bash
+npx wrangler kv namespace create COVERAGE
+# paste the "id" it prints into wrangler.json's kv_namespaces entry
+```
+
+The 1-click **Deploy to Cloudflare Workers** button path may provision
+this automatically depending on your account; the CLI path above always
+works and is the one this was actually tested against.
+
+### 3. Enable Browser Rendering
 
 Browser Rendering isn't on by default, so enable it for your account in the
 Cloudflare dashboard (**Workers & Pages → Browser Rendering**) if you
@@ -170,7 +211,7 @@ No separate setup is needed for Kitesurf itself: it's a typed option
 (`{ browser: "kitesurf" }`) on the same `BROWSER` binding, not a different
 binding or API token.
 
-### 3. Accept the vision model's license
+### 4. Accept the vision model's license
 
 The first time any Worker on your account calls
 `@cf/meta/llama-3.2-11b-vision-instruct`, Cloudflare requires you to accept
@@ -178,7 +219,7 @@ Meta's license for it — do this once in the dashboard's Workers AI model
 page before your first real run, or the escalation step will fail on every
 flagged page.
 
-### 4. Create a GitHub token, and point the Worker at your repos
+### 5. Create a GitHub token, and point the Worker at your repos
 
 Create a **fine-grained personal access token** scoped to the repo you want
 Issues filed in, with:
@@ -197,13 +238,13 @@ npx wrangler secret put GITHUB_REPO    # the repo name, without the owner
 npx wrangler secret put TARGET_URL     # the site to crawl, e.g. https://clawbuilders.club
 ```
 
-### 5. Set the run-trigger secret
+### 6. Set the run-trigger secret
 
 ```bash
 npx wrangler secret put RUN_TOKEN   # any random string
 ```
 
-### 6. (Optional) Tune the QA goal and engine routing
+### 7. (Optional) Tune the QA goal and engine routing
 
 ```bash
 npx wrangler secret put QA_GOAL   # e.g. "Test the event registration flow end to end"
@@ -211,17 +252,24 @@ npx wrangler secret put QA_GOAL   # e.g. "Test the event registration flow end t
 
 `CHROMIUM_ONLY_PATTERNS` (a `wrangler.json` var, default empty) is a
 comma-separated list of URL substrings that always route to Chromium
-regardless of what the Jev router decides — useful for known-authenticated
+regardless of what the Jev router decides. Useful for known-authenticated
 paths you don't want the router guessing about.
 
-### 7. Deploy
+`REVISIT_RATE` (a `wrangler.json` var, default `0.3`) is the fraction of
+`MAX_PAGES` reserved for regression-checking pages this Worker has crawled
+before, instead of finding new ones. `0` disables it entirely (pure
+exploration, closer to the old behavior); closer to `1` spends most of the
+budget re-verifying known ground. `0.3` means roughly a third of a run's
+pages are deliberate re-checks and the rest are biased toward new ones.
+
+### 8. Deploy
 
 ```bash
 npm install
 npm run deploy
 ```
 
-### 8. Verify
+### 9. Verify
 
 ```bash
 curl "https://web-qa-jev-agent.<your-subdomain>.workers.dev/run?token=<RUN_TOKEN>"
@@ -255,30 +303,38 @@ field, only day-of-month/month/day-of-week), so a fixed day each month is
 the practical equivalent, roughly every 4.3 weeks rather than exactly 4.
 Chosen deliberately over a daily run: a site's content and behavior mostly
 doesn't change day to day, so a daily crawl with a small budget was mostly
-re-testing the same few things over and over (see "Limitations" below, in
-particular the no-memory-across-runs gap); running less often but with the
-budget maxed out gets more real coverage per run instead. Adjust the cron,
-or lean on the `/run` route for on-demand checks; both call the exact same
-pipeline.
+re-testing the same few things over and over; running less often but with
+the budget maxed out gets more real coverage per run instead.
+
+**Monthly is a default for this project, not a recommendation for yours.**
+Change `wrangler.json`'s cron to whatever matches how often your own site
+actually changes: a project shipping multiple times a day probably wants
+weekly or even daily again, now that the coverage memory below (not the
+old budget-less daily loop) is what actually spreads exploration out
+across runs. Lean on the `/run` route for on-demand checks any time; it
+calls the exact same pipeline as the cron.
 
 ## Limitations (read before treating this as a real QA tool)
 
-- **The action loop can get stuck repeating the same click.** The Jev
-  decision call in `src/action-loop.ts` is *told* to "prefer unexplored
-  elements over ones already tried this run," but the `state` it's given
-  each step (`{ goal, step, of }`) carries no record of what was already
-  clicked or typed into. `actionsAttempted` is tracked but never fed back
-  into the next step's decision. If the same element keeps scoring
-  highest, nothing stops it from being picked every step for the whole
-  `ACTION_BUDGET`. Not fixed yet; the fix is straightforward (pass the
-  running `actionsAttempted` list into `state`), just not done.
-- **No memory across runs, only across findings.** This Worker has no KV,
-  Durable Object, or database, so nothing persists between invocations
-  except the GitHub Issues themselves, which stop the same bug from being
-  *filed* twice (`src/github.ts`'s dedup check) but don't influence which
-  pages or elements get tried next time. Every run starts from the same
-  `TARGET_URL` with the same BFS order, so on an unchanging site, runs can
-  plausibly retread a lot of the same ground.
+- **Coverage memory is real now, but approximate.** `src/coverage.ts` keeps
+  a KV-backed index of pages and actions tried before, and both the crawl
+  order and the action loop's per-element choice now actually use it
+  (fixed: the action loop used to be *told* to prefer unexplored elements
+  while being given no data to know what "already tried" even meant.
+  `state` now carries this visit's history, and each element's KV history
+  is in its description). Two real approximations remain, not hidden:
+  element identity is a `kind:label` string hash (`actionSignature()`), so
+  a copy change across deploys looks like a brand-new element rather than
+  the same one, which under-counts history rather than misattributing it;
+  and "did this action find something" is really "did the *page* it was
+  tried on get flagged," since triage judges a whole page's signals, not
+  one interaction: a reasonable proxy, not precise per-action causality.
+- **No coordination between overlapping runs.** The coverage index is one
+  KV value, read once at the start of a run and written once after
+  triage. Two runs overlapping (a cron firing while a manual `/run` is
+  still going) could race and the slower one's write would clobber the
+  faster one's. Not a real risk at a monthly or weekly cadence with no
+  concurrency, but worth knowing before cranking the cron frequency way up.
 - **Text-only triage/routing/navigation, vision-only confirmation.** Jev
   never sees pixels — the vision model only sees a JPEG screenshot per
   flagged page, not a full interaction trace. Subtle visual bugs a real

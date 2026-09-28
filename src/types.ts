@@ -1,6 +1,9 @@
 export interface Env {
   AI: Ai;
   BROWSER: Fetcher;
+  /** Cross-run coverage memory (src/coverage.ts) — which pages/elements
+   * have been tried before and whether they found something. */
+  COVERAGE: KVNamespace;
 
   TARGET_URL: string;
   GITHUB_TOKEN: string;
@@ -21,6 +24,9 @@ export interface Env {
   /** Comma-separated substrings that always route to Chromium regardless of
    * the Jev router's call — e.g. known-authenticated paths (src/router.ts). */
   CHROMIUM_ONLY_PATTERNS: string;
+  /** Fraction (0-1) of MAX_PAGES reserved for regression-checking known
+   * pages instead of discovering new ones (src/coverage.ts, src/explorer.ts). */
+  REVISIT_RATE: string;
 }
 
 export interface PageSignals {
@@ -40,6 +46,9 @@ export interface PageSignals {
    * e.g. "clicked button \"Submit\"", "typed into Email". Empty if the loop
    * found nothing worth interacting with, or wasn't reached. */
   actionsAttempted: string[];
+  /** Stable signatures (src/coverage.ts) for each entry in actionsAttempted,
+   * same order — used to write coverage history back after triage. */
+  actionSignatures: string[];
 }
 
 export interface TriageResult {

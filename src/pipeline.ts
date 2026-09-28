@@ -3,6 +3,7 @@ import { explore } from "./explorer";
 import { triage } from "./triage";
 import { draftFinding } from "./escalate";
 import { listOpenIssues, findDuplicate, commentOnIssue, createIssue } from "./github";
+import { saveCoverage } from "./coverage";
 
 export interface RunSummary {
   pagesVisited: number;
@@ -15,8 +16,25 @@ export interface RunSummary {
 export async function runPipeline(env: Env): Promise<RunSummary> {
   const floor = parseFloat(env.ESCALATION_FLOOR) || 0.6;
 
-  const pages = await explore(env);
+  const { pages, index } = await explore(env);
   const triageResults = await Promise.all(pages.map((page) => triage(env, page)));
+
+  // Write coverage back before filing anything, so a slow/failed dedup or
+  // GitHub write later in this run doesn't cost the memory of what was
+  // just tried — this run's crawl-order improvement for next time doesn't
+  // depend on the rest of the pipeline succeeding.
+  await saveCoverage(
+    env,
+    index,
+    pages.map((page, i) => ({
+      url: page.url,
+      hadFinding: (triageResults[i]?.isRealBug ?? 0) >= floor,
+      actionSignatures: page.actionSignatures.map((signature) => ({
+        signature,
+        hadFinding: (triageResults[i]?.isRealBug ?? 0) >= floor,
+      })),
+    })),
+  );
 
   const flagged = pages
     .map((page, i) => ({ page, triageResult: triageResults[i]! }))

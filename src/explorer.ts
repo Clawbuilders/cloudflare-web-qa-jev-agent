@@ -3,6 +3,7 @@ import type { Env, PageSignals } from "./types";
 import { redact } from "./redact";
 import { chooseEngine, type Engine } from "./router";
 import { runActionLoop } from "./action-loop";
+import { loadIndex, pickRevisitCandidates, type SiteIndex } from "./coverage";
 
 // page.evaluate() callbacks below run inside the remote browser's DOM
 // context, not the Worker's — these ambient declarations exist only so
@@ -20,37 +21,38 @@ function launchEngine(env: Env, engine: Engine): Promise<Browser> {
     : puppeteer.launch(env.BROWSER);
 }
 
-function failedSignals(url: string, engine: Engine, message: string): PageSignals {
-  return {
-    url,
-    title: "",
-    consoleErrors: [],
-    failedRequests: [],
-    pageErrors: [message],
-    textExcerpt: "",
-    screenshot: null,
-    engine,
-    actionsAttempted: [],
-  };
-}
-
 /**
  * Crawls up to MAX_PAGES same-origin pages starting from TARGET_URL. Each
  * page is routed to Kitesurf (cheap default) or Chromium via Browser
  * Rendering (escalation) by router.ts's Jev call, then driven by
  * action-loop.ts's Jev-picked action loop instead of passively reading —
- * see the main app repo's docs/phases/phase-51 for the full design and the
- * alternatives (Stagehand, WebMCP) considered and why.
+ * see the main app repo's docs/phases/phase-51 for the full design.
+ *
+ * Crawl order is coverage-aware (coverage.ts): REVISIT_RATE of the
+ * MAX_PAGES budget is reserved for regression-checking pages this Worker
+ * has crawled before (previously-flagged pages first, then the stalest),
+ * and the rest is biased toward pages never seen before over ones already
+ * in the coverage index — so repeated runs spread out across the site
+ * instead of retreading the same first few pages every time, while still
+ * periodically re-verifying old ground since unrelated changes can break
+ * something that used to work.
  *
  * Collects the same text-shaped signals a real bug tends to leave behind —
  * console errors, failed network requests, uncaught page errors, a text
  * excerpt — plus a screenshot of every page (only escalated pages end up
  * using it) and a log of what the action loop actually did.
  */
-export async function explore(env: Env): Promise<PageSignals[]> {
+export async function explore(env: Env): Promise<{ pages: PageSignals[]; index: SiteIndex }> {
   const maxPages = Math.max(1, Math.min(10, parseInt(env.MAX_PAGES, 10) || 3));
+  const revisitRate = Math.max(0, Math.min(1, parseFloat(env.REVISIT_RATE) || 0));
   const goal = env.QA_GOAL?.trim() || DEFAULT_GOAL;
   const startUrl = new URL(env.TARGET_URL);
+
+  const index = await loadIndex(env);
+  const revisitSlots = Math.round(maxPages * revisitRate);
+  const revisitCandidates = pickRevisitCandidates(index, revisitSlots).filter(
+    (url) => url !== startUrl.toString(),
+  );
 
   const browsers: Partial<Record<Engine, Browser>> = {};
   const getBrowser = async (engine: Engine): Promise<Browser> => {
@@ -63,7 +65,16 @@ export async function explore(env: Env): Promise<PageSignals[]> {
   };
 
   const visited = new Set<string>();
-  const queue: string[] = [startUrl.toString()];
+  const queued = new Set<string>([...revisitCandidates, startUrl.toString()]);
+  // Three lanes, drained in priority order: pre-picked regression checks,
+  // then never-before-seen pages, then already-known pages as a fallback
+  // (a small site may not have enough fresh links to fill the budget).
+  const revisitQueue: string[] = [...revisitCandidates];
+  const freshQueue: string[] = [startUrl.toString()];
+  const knownQueue: string[] = [];
+
+  const nextUrl = (): string | undefined => revisitQueue.shift() ?? freshQueue.shift() ?? knownQueue.shift();
+
   const results: PageSignals[] = [];
 
   const visit = async (url: string, engine: Engine): Promise<PageSignals> => {
@@ -86,9 +97,12 @@ export async function explore(env: Env): Promise<PageSignals[]> {
     try {
       await page.goto(url, { waitUntil: "load", timeout: NAV_TIMEOUT_MS });
 
-      const { actionsAttempted } = await runActionLoop(env, page, goal).catch(() => ({
-        actionsAttempted: [] as string[],
-      }));
+      const { actionsAttempted, actionSignatures } = await runActionLoop(
+        env,
+        page,
+        goal,
+        index.pages[url],
+      ).catch(() => ({ actionsAttempted: [] as string[], actionSignatures: [] as string[] }));
 
       const title = await page.title();
       const textExcerpt = redact(await page.evaluate(() => document.body?.innerText?.slice(0, 2000) ?? ""));
@@ -103,9 +117,11 @@ export async function explore(env: Env): Promise<PageSignals[]> {
         for (const link of links) {
           try {
             const parsed = new URL(link);
-            if (parsed.origin === startUrl.origin && !visited.has(parsed.toString())) {
-              queue.push(parsed.toString());
-            }
+            const normalized = parsed.toString();
+            if (parsed.origin !== startUrl.origin || visited.has(normalized) || queued.has(normalized)) continue;
+            queued.add(normalized);
+            if (index.pages[normalized]) knownQueue.push(normalized);
+            else freshQueue.push(normalized);
           } catch {
             // ignore unparsable hrefs (mailto:, javascript:, etc.)
           }
@@ -122,16 +138,31 @@ export async function explore(env: Env): Promise<PageSignals[]> {
         screenshot,
         engine,
         actionsAttempted,
+        actionSignatures,
       };
     } finally {
       await page.close().catch(() => undefined);
     }
   };
 
+  const makeFailure = (url: string, engine: Engine, message: string): PageSignals => ({
+    url,
+    title: "",
+    consoleErrors: [],
+    failedRequests: [],
+    pageErrors: [message],
+    textExcerpt: "",
+    screenshot: null,
+    engine,
+    actionsAttempted: [],
+    actionSignatures: [],
+  });
+
   try {
-    while (queue.length > 0 && results.length < maxPages) {
-      const url = queue.shift();
-      if (!url || visited.has(url)) continue;
+    while (results.length < maxPages) {
+      const url = nextUrl();
+      if (!url) break;
+      if (visited.has(url)) continue;
       visited.add(url);
 
       const engine = await chooseEngine(env, url, goal);
@@ -140,7 +171,7 @@ export async function explore(env: Env): Promise<PageSignals[]> {
         results.push(await visit(url, engine));
       } catch (err) {
         if (engine !== "kitesurf") {
-          results.push(failedSignals(url, engine, `Navigation failed: ${redact(String(err)).slice(0, 300)}`));
+          results.push(makeFailure(url, engine, `Navigation failed: ${redact(String(err)).slice(0, 300)}`));
           continue;
         }
 
@@ -152,7 +183,7 @@ export async function explore(env: Env): Promise<PageSignals[]> {
           results.push(await visit(url, "chromium"));
         } catch (fallbackErr) {
           results.push(
-            failedSignals(
+            makeFailure(
               url,
               "chromium",
               `Kitesurf failed (${redact(String(err)).slice(0, 150)}); Chromium fallback also failed: ${redact(String(fallbackErr)).slice(0, 150)}`,
@@ -165,5 +196,5 @@ export async function explore(env: Env): Promise<PageSignals[]> {
     await Promise.all(Object.values(browsers).map((browser) => browser?.close().catch(() => undefined)));
   }
 
-  return results;
+  return { pages: results, index };
 }

@@ -13,6 +13,12 @@
   "browser": {
     "binding": "BROWSER"
   },
+  "kv_namespaces": [
+    {
+      "binding": "COVERAGE",
+      "id": "2f782cdc2ba64ffb822e73f481cfe290"
+    }
+  ],
   "triggers": {
     "crons": ["0 14 1 * *"]
   },
@@ -21,6 +27,7 @@
     "ESCALATION_FLOOR": "0.6",
     "ISSUE_LABEL": "web-qa-jev-agent",
     "ACTION_BUDGET": "10",
-    "CHROMIUM_ONLY_PATTERNS": ""
+    "CHROMIUM_ONLY_PATTERNS": "",
+    "REVISIT_RATE": "0.3"
   }
 }

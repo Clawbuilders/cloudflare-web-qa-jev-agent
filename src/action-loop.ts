@@ -1,6 +1,7 @@
 import type { Page } from "@cloudflare/puppeteer";
 import type { Env } from "./types";
 import { redact } from "./redact";
+import { actionSignature, type PageRecord } from "./coverage";
 
 // page.evaluate()/ElementHandle.evaluate() callbacks below run inside the
 // remote browser's DOM context, not the Worker's — see explorer.ts's own
@@ -83,12 +84,32 @@ async function snapshot(page: Page): Promise<{ handles: Awaited<ReturnType<Page[
   return { handles, elements };
 }
 
+function describeHistory(record: PageRecord | undefined, signature: string, triedThisVisit: Set<string>): string {
+  if (triedThisVisit.has(signature)) return " (already tried this visit)";
+  const prior = record?.actions[signature];
+  if (!prior) return " (never tried before)";
+  return prior.lastHadFinding
+    ? ` (tried ${prior.tries}x before, last check found something worth re-verifying)`
+    : ` (tried ${prior.tries}x before, previously clean)`;
+}
+
 /**
  * Ports the core idea from browser-use/jev-ultrafast: one DOM snapshot of
  * visible interactive elements per step, one Jev call picks the next
  * indexed action (or "done"), repeat up to ACTION_BUDGET times. This is
  * what turns the crawl from "follow <a href> links and read" into "act
  * like a QA tester" — filling in forms and clicking through flows.
+ *
+ * Balances exploration against regression-checking: every candidate
+ * element's description is annotated with its history from `priorRecord`
+ * (src/coverage.ts) — never tried, tried N times and clean, or tried
+ * before and found something — and with whether it's already been tried
+ * *this* visit, so a repeat within one page is an informed choice Jev can
+ * see, not a bug it can't. Jev is instructed to prefer the genuinely new,
+ * but not exclusively: a previously-clean element can still break from an
+ * unrelated change elsewhere in the codebase, so it's worth an occasional
+ * re-check, and a previously-flagged element gets real priority to verify
+ * whether the fix actually held.
  *
  * Any single failed interaction or an unreachable Jev call just ends the
  * loop early rather than throwing — the page's own console/network/error
@@ -99,9 +120,12 @@ export async function runActionLoop(
   env: Env,
   page: Page,
   goal: string,
-): Promise<{ actionsAttempted: string[] }> {
+  priorRecord: PageRecord | undefined,
+): Promise<{ actionsAttempted: string[]; actionSignatures: string[] }> {
   const budget = Math.max(1, Math.min(10, parseInt(env.ACTION_BUDGET, 10) || 4));
   const actionsAttempted: string[] = [];
+  const actionSignatures: string[] = [];
+  const triedThisVisit = new Set<string>();
 
   for (let step = 0; step < budget; step++) {
     const { handles, elements } = await snapshot(page).catch(() => ({ handles: [], elements: [] }));
@@ -111,18 +135,20 @@ export async function runActionLoop(
       done: "Nothing more useful to interact with here — move on to the next page",
     };
     for (const el of elements) {
-      criteria[String(el.index)] = `${el.kind}: ${redact(el.label)}`;
+      const signature = actionSignature(el.kind, el.label);
+      criteria[String(el.index)] =
+        `${el.kind}: ${redact(el.label)}${describeHistory(priorRecord, signature, triedThisVisit)}`;
     }
 
     let choice: string;
     try {
       const response = (await env.AI.run("typesafe/jev", {
-        state: { goal, step: step + 1, of: budget },
+        state: { goal, step: step + 1, of: budget, alreadyTriedThisVisit: triedThisVisit.size },
         questions: {
           next_action: {
             type: "choice",
             instructions:
-              "Acting as an automated QA tester pursuing the stated goal, which element on this page is most worth interacting with next? Prefer forms, buttons, and unexplored elements over ones already tried this run.",
+              "Acting as an automated QA tester pursuing the stated goal, which element on this page is most worth interacting with next? Each option's history is in its description. Prefer never-tried elements first. Among elements already covered, prioritize re-checking one that previously found something over one that was previously clean, but don't rule out an occasional clean re-check either since unrelated code changes can break something that used to work.",
             criteria,
           },
         },
@@ -139,6 +165,10 @@ export async function runActionLoop(
     const handle = handles[chosenIndex];
     if (!chosen || !handle) break;
 
+    const signature = actionSignature(chosen.kind, chosen.label);
+    triedThisVisit.add(signature);
+    actionSignatures.push(signature);
+
     try {
       if (chosen.kind === "input") {
         const value = fillerFor(chosen.inputType);
@@ -154,5 +184,5 @@ export async function runActionLoop(
     }
   }
 
-  return { actionsAttempted };
+  return { actionsAttempted, actionSignatures };
 }
