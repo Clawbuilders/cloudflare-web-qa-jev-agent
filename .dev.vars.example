@@ -7,3 +7,5 @@ GITHUB_APP_INSTALLATION_ID=12345678
 GITHUB_OWNER=your-org-or-username
 GITHUB_REPO=your-repo-name
 RUN_TOKEN=some-random-string
+# Optional — only if the App's webhook is on (comment "/run-qa" to trigger a run)
+GITHUB_WEBHOOK_SECRET=some-random-string
