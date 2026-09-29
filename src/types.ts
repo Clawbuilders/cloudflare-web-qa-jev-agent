@@ -6,7 +6,11 @@ export interface Env {
   COVERAGE: KVNamespace;
 
   TARGET_URL: string;
-  GITHUB_TOKEN: string;
+  /** GitHub App identity — this Worker posts as the App's bot account, no
+   * personal access token (see src/github-app-auth.ts). */
+  GITHUB_APP_ID: string;
+  GITHUB_APP_PRIVATE_KEY: string;
+  GITHUB_APP_INSTALLATION_ID: string;
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
   RUN_TOKEN: string;
