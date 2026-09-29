@@ -4,11 +4,16 @@
  * Self-contained (no npm deps): Cloudflare Workers support RS256 signing
  * natively via Web Crypto (`crypto.subtle`). Same approach as
  * cloudflare-code-reviewer's Advanced Track (`src/github-app-auth.ts`
- * there), minus the webhook-signature piece that repo needs and this one
- * doesn't — this Worker only ever calls out to GitHub, it never receives
- * GitHub webhooks, so there's no `installation.id` arriving on a payload.
- * `GITHUB_APP_INSTALLATION_ID` is set once as a secret instead (read it off
- * the "Install App" URL after installing on the target repo).
+ * there).
+ *
+ * Unlike that repo, this Worker's *outbound* calls (list/create/comment on
+ * Issues) don't need a webhook at all — `installation.id` is read from a
+ * secret (`GITHUB_APP_INSTALLATION_ID`), not a webhook payload. The webhook
+ * signature verifier below exists only for the optional *inbound* trigger
+ * (src/webhook.ts): a GitHub App with an active webhook subscribed to
+ * "Issue comment" lets someone comment a trigger phrase to kick off a run
+ * on demand, instead of waiting for the monthly cron or hitting `/run`
+ * with the shared `RUN_TOKEN`.
  */
 
 export interface GitHubAppEnv {
@@ -79,4 +84,38 @@ async function getInstallationToken(appJwt: string, installationId: string): Pro
 export async function getGitHubAppToken(env: GitHubAppEnv): Promise<string> {
   const jwt = await createAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
   return getInstallationToken(jwt, env.GITHUB_APP_INSTALLATION_ID);
+}
+
+/**
+ * Verifies GitHub's `X-Hub-Signature-256` HMAC over the raw request body.
+ * GitHub signs every webhook delivery with the secret set on the App's
+ * webhook config — reject anything that doesn't match rather than trusting
+ * the payload, since a hit on `/webhook/github` triggers a real (paid)
+ * crawl + Workers AI + vision pipeline.
+ */
+export async function verifyWebhookSignature(
+  secret: string,
+  rawBody: string,
+  signatureHeader: string | null,
+): Promise<boolean> {
+  if (!signatureHeader) return false;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(rawBody));
+  const expected =
+    "sha256=" +
+    Array.from(new Uint8Array(signature))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  if (expected.length !== signatureHeader.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < expected.length; i++) {
+    mismatch |= expected.charCodeAt(i) ^ signatureHeader.charCodeAt(i);
+  }
+  return mismatch === 0;
 }

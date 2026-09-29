@@ -225,25 +225,37 @@ This Worker posts as a real bot identity — a GitHub App, not a personal
 access token. No PAT fallback: `src/github-app-auth.ts` JWT-signs with the
 App's private key (Web Crypto, `crypto.subtle`, no npm deps) and exchanges
 it for a short-lived installation token on every call. Same approach as
-[`cloudflare-code-reviewer`'s Advanced Track](https://github.com/Clawbuilders/cloudflare-code-reviewer),
-minus the webhook piece that repo needs and this one doesn't — this Worker
-only ever calls out to GitHub, it never receives GitHub events.
+[`cloudflare-code-reviewer`'s Advanced Track](https://github.com/Clawbuilders/cloudflare-code-reviewer).
+
+Outbound calls (listing/creating/commenting on Issues) don't need a
+webhook — the App's own REST auth handles that. Only set up the webhook
+step below if you also want [§5b's comment trigger](#5b-optional-trigger-a-run-by-commenting-run-qa),
+otherwise leave it inactive.
 
 1. Register under your **org** (not personal account):
    `github.com/organizations/<org>/settings/apps/new`.
 2. Name it without "bot" in the name — GitHub auto-appends `[bot]` in
    comments/commits (`web-qa-jev-agent` → `web-qa-jev-agent[bot]`).
 3. Skip **Identifying and authorizing users** entirely (delete the empty
-   Redirect URI row) and skip **Webhook** (leave it inactive) — this Worker
-   never receives callbacks, it only calls the REST API.
-4. **Permissions**: only
+   Redirect URI row).
+4. **Webhook**: leave inactive, *unless* you want §5b's comment trigger —
+   in that case: Active, URL = `https://<your-worker>.workers.dev/webhook/github`,
+   generate + save the webhook secret immediately (GitHub only shows it
+   once).
+5. **Permissions**: only
    - Repository permissions → **Issues: Read and write**
    - Repository permissions → **Contents: Read and write** (for uploading
      screenshots into `qa-screenshots/`)
-5. **Where can this be installed?** → Only on this account.
-6. **Create GitHub App**, then **Generate a private key** (downloads a
+   - If you enabled the webhook in step 4: a **Subscribe to events**
+     checkbox for **Issue comment** appears once the Issues permission is
+     set above — check it, or GitHub delivers nothing, silently, forever
+     (same gotcha the code-reviewer's Advanced Track docs already call out
+     for `pull_request`; diagnose via the App's own **Settings → Advanced
+     → Recent Deliveries**, not the Worker's logs, if this happens to you).
+6. **Where can this be installed?** → Only on this account.
+7. **Create GitHub App**, then **Generate a private key** (downloads a
    `.pem`) and note the **App ID** on the same page.
-7. **Install App** on just the target repo. The installation URL's last
+8. **Install App** on just the target repo. The installation URL's last
    path segment is the **installation ID** you'll need below (e.g.
    `github.com/organizations/<org>/settings/installations/12345678` → `12345678`).
 
@@ -270,6 +282,26 @@ npx wrangler secret put TARGET_URL     # the site to crawl, e.g. https://clawbui
 > prompt or the Cloudflare dashboard. If it ever leaks into a session
 > anyway, treat it as compromised and rotate immediately (generating a new
 > private key invalidates the old one instantly).
+
+### 5b. (Optional) Trigger a run by commenting "/run-qa"
+
+If you turned the webhook on in step 4 above, set the secret it generated:
+
+```bash
+npx wrangler secret put GITHUB_WEBHOOK_SECRET
+```
+
+Then comment `/run-qa` anywhere in the body of any issue or PR on the
+target repo — `src/webhook.ts` verifies the delivery's
+`X-Hub-Signature-256` against that secret, checks the commenter's
+`author_association` is `OWNER`/`MEMBER`/`COLLABORATOR` (a run costs real
+Browser Rendering + Workers AI usage, so it's gated to people with write
+access, not every public commenter), and kicks off the same pipeline the
+cron runs — then comments back on that issue/PR with the result once it
+finishes (page count, findings, issues filed/matched).
+
+Leaving `GITHUB_WEBHOOK_SECRET` unset disables this entirely — `/webhook/github`
+just 404s — without affecting the cron or `/run?token=` triggers.
 
 ### 6. Set the run-trigger secret
 

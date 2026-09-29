@@ -14,6 +14,10 @@ export interface Env {
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
   RUN_TOKEN: string;
+  /** Optional — only needed if the App's webhook is turned on so a GitHub
+   * comment can trigger a run (src/webhook.ts). Unset means /webhook/github
+   * always 404s; the cron and /run?token= triggers still work either way. */
+  GITHUB_WEBHOOK_SECRET?: string;
 
   MAX_PAGES: string;
   ESCALATION_FLOOR: string;

@@ -1,13 +1,18 @@
 import type { Env } from "./types";
 import { runPipeline } from "./pipeline";
+import { handleGitHubWebhook } from "./webhook";
 
 export default {
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runPipeline(env).catch((err) => console.error("Scheduled run failed:", err)));
   },
 
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === "/webhook/github" && request.method === "POST") {
+      return handleGitHubWebhook(request, env, ctx);
+    }
 
     if (url.pathname === "/run") {
       const token = url.searchParams.get("token");
