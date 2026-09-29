@@ -219,24 +219,57 @@ Meta's license for it — do this once in the dashboard's Workers AI model
 page before your first real run, or the escalation step will fail on every
 flagged page.
 
-### 5. Create a GitHub token, and point the Worker at your repos
+### 5. Create a GitHub App, and point the Worker at your repos
 
-Create a **fine-grained personal access token** scoped to the repo you want
-Issues filed in, with:
+This Worker posts as a real bot identity — a GitHub App, not a personal
+access token. No PAT fallback: `src/github-app-auth.ts` JWT-signs with the
+App's private key (Web Crypto, `crypto.subtle`, no npm deps) and exchanges
+it for a short-lived installation token on every call. Same approach as
+[`cloudflare-code-reviewer`'s Advanced Track](https://github.com/Clawbuilders/cloudflare-code-reviewer),
+minus the webhook piece that repo needs and this one doesn't — this Worker
+only ever calls out to GitHub, it never receives GitHub events.
 
-- Repository permissions → **Issues: Read and write**
-- Repository permissions → **Contents: Read and write** (for uploading
-  screenshots into `qa-screenshots/`)
+1. Register under your **org** (not personal account):
+   `github.com/organizations/<org>/settings/apps/new`.
+2. Name it without "bot" in the name — GitHub auto-appends `[bot]` in
+   comments/commits (`web-qa-jev-agent` → `web-qa-jev-agent[bot]`).
+3. Skip **Identifying and authorizing users** entirely (delete the empty
+   Redirect URI row) and skip **Webhook** (leave it inactive) — this Worker
+   never receives callbacks, it only calls the REST API.
+4. **Permissions**: only
+   - Repository permissions → **Issues: Read and write**
+   - Repository permissions → **Contents: Read and write** (for uploading
+     screenshots into `qa-screenshots/`)
+5. **Where can this be installed?** → Only on this account.
+6. **Create GitHub App**, then **Generate a private key** (downloads a
+   `.pem`) and note the **App ID** on the same page.
+7. **Install App** on just the target repo. The installation URL's last
+   path segment is the **installation ID** you'll need below (e.g.
+   `github.com/organizations/<org>/settings/installations/12345678` → `12345678`).
 
-Then set it, the target site, and the report repo, all as secrets (kept out
-of the committed config on purpose — same reasoning as the other two bots):
+Convert the key format — GitHub gives you PKCS#1, Cloudflare's Web Crypto
+needs PKCS#8:
+```bash
+openssl pkcs8 -topk8 -nocrypt -in downloaded-key.pem -out pkcs8-key.pem
+```
+
+Then set everything as secrets (kept out of the committed config on
+purpose — same reasoning as the other two bots):
 
 ```bash
-npx wrangler secret put GITHUB_TOKEN
+npx wrangler secret put GITHUB_APP_ID
+npx wrangler secret put GITHUB_APP_PRIVATE_KEY        # full contents of pkcs8-key.pem
+npx wrangler secret put GITHUB_APP_INSTALLATION_ID
 npx wrangler secret put GITHUB_OWNER   # e.g. your GitHub org or username
 npx wrangler secret put GITHUB_REPO    # the repo name, without the owner
 npx wrangler secret put TARGET_URL     # the site to crawl, e.g. https://clawbuilders.club
 ```
+
+> **Never let raw private-key material pass through a chat/AI coding
+> assistant** — copy it directly from the local file into the terminal
+> prompt or the Cloudflare dashboard. If it ever leaks into a session
+> anyway, treat it as compromised and rotate immediately (generating a new
+> private key invalidates the old one instantly).
 
 ### 6. Set the run-trigger secret
 

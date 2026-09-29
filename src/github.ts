@@ -1,10 +1,12 @@
 import type { Env, Finding } from "./types";
+import { getGitHubAppToken } from "./github-app-auth";
 
 const GITHUB_API = "https://api.github.com";
 
-function headers(env: Env): HeadersInit {
+async function headers(env: Env): Promise<HeadersInit> {
+  const token = await getGitHubAppToken(env);
   return {
-    Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+    Authorization: `Bearer ${token}`,
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "cloudflare-web-qa-jev-agent",
@@ -22,7 +24,7 @@ export async function listOpenIssues(env: Env): Promise<OpenIssue[]> {
   url.searchParams.set("labels", env.ISSUE_LABEL);
   url.searchParams.set("per_page", "50");
 
-  const resp = await fetch(url, { headers: headers(env) });
+  const resp = await fetch(url, { headers: await headers(env) });
   if (!resp.ok) throw new Error(`Listing open issues failed: ${resp.status} ${await resp.text()}`);
   const issues = (await resp.json()) as OpenIssue[];
   return issues.map((issue) => ({ number: issue.number, title: issue.title }));
@@ -69,7 +71,7 @@ export async function findDuplicate(
 export async function commentOnIssue(env: Env, issueNumber: number, body: string): Promise<void> {
   const resp = await fetch(
     `${GITHUB_API}/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/issues/${issueNumber}/comments`,
-    { method: "POST", headers: headers(env), body: JSON.stringify({ body }) },
+    { method: "POST", headers: await headers(env), body: JSON.stringify({ body }) },
   );
   if (!resp.ok) throw new Error(`Commenting on issue failed: ${resp.status} ${await resp.text()}`);
 }
@@ -91,7 +93,7 @@ async function uploadScreenshot(env: Env, finding: Finding): Promise<string | nu
     `${GITHUB_API}/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/contents/${path}`,
     {
       method: "PUT",
-      headers: headers(env),
+      headers: await headers(env),
       body: JSON.stringify({
         message: `Add QA screenshot for ${finding.url}`,
         content: base64,
@@ -123,7 +125,7 @@ export async function createIssue(env: Env, finding: Finding): Promise<{ number:
 
   const resp = await fetch(`${GITHUB_API}/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/issues`, {
     method: "POST",
-    headers: headers(env),
+    headers: await headers(env),
     body: JSON.stringify({ title: finding.title, body, labels: [env.ISSUE_LABEL] }),
   });
   if (!resp.ok) throw new Error(`Creating issue failed: ${resp.status} ${await resp.text()}`);
