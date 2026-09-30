@@ -158,26 +158,75 @@ a public bug report.
 - `src/redact.ts` — the secret-scrubbing pass
 - `docs/webmcp-probe.md` — manual steps for probing WebMCP tool support on a
   target site; not wired into the automated pipeline (see that file for why)
-- `wrangler.json` — Worker config (AI + Browser Rendering + KV bindings, cron)
+- `cloudflare.config.ts` — Worker config (AI + Browser Rendering + KV
+  bindings, cron); generated from `wrangler.json` via `cf migrate` and now
+  the source of truth for anyone using Cloudflare's `cf` CLI. `wrangler.json`
+  is kept alongside it for now as the classic-Wrangler fallback path — edit
+  `cloudflare.config.ts` going forward and treat `wrangler.json` as frozen,
+  since nothing currently keeps the two in sync automatically if you edit
+  both.
 
 ## Setup
+
+Cloudflare's [`cf` CLI](https://blog.cloudflare.com/cloudflare-cf-cli-launch/)
+is what this repo actually deploys with now (still open beta as of this
+writing) — every step below shows the `cf` command, with the classic
+`wrangler` equivalent as a fallback if you hit a beta rough edge. Install
+whichever you're using:
+
+```bash
+npm i -g cf         # or: npm i -g wrangler
+cf auth login       # or: wrangler login
+```
+
+> **⚠️ The bigger trap: `cf deploy` itself wipes any secret not declared in
+> `cloudflare.config.ts` — every single deploy, not just when touching
+> secrets.** Confirmed the hard way: after deploying with a config whose
+> `env` block declared zero secrets, `wrangler secret list` came back `[]`
+> — all 8 secrets gone, GitHub auth and the webhook trigger both broken.
+> `cf` treats the config's declared secret set as the *desired state* and
+> reconciles the live Worker to match it on every deploy, unlike classic
+> Wrangler, where a secret set once just persists across deploys forever
+> regardless of `wrangler.json`. **The fix**: every secret this Worker
+> uses must have a matching `bindings.secret()` entry in
+> `cloudflare.config.ts`'s `env` block (see that file — it's already done
+> for all 8 required secrets in this repo). `bindings.secret()` takes no
+> options and has no "optional" mode, though — declaring one makes `cf
+> deploy` *refuse to deploy at all* if it isn't set, which is why the
+> genuinely-optional `QA_GOAL` (§7) is deliberately left undeclared: if
+> you set it, know that the next unrelated `cf deploy` (no code change,
+> just re-running deploy) will silently drop it again, and you'll need to
+> re-set it afterward.
+>
+> **On top of that**, `cf workers secrets update` replaces the Worker's
+> *entire* secret set with just the one secret you're setting — it does
+> not patch, even once secrets are properly declared. Confirmed
+> separately: setting one secret via `update` on a Worker that already had
+> 7 others silently dropped all 7. `update` issues a `PUT` to the plain
+> `/secrets` collection endpoint (full replace); the fix is `cf workers
+> secrets bulk`, which issues a `PATCH` to `/secrets-bulk` (RFC 7396 JSON
+> Merge Patch — "secrets not included in the request are left unchanged",
+> straight from its own `--help`). Every secret command below uses `bulk`
+> for exactly this reason.
 
 ### 1. Deploy
 
 Click the **Deploy to Cloudflare Workers** button above, or clone and run
-`wrangler deploy` yourself (see "Local development" below).
+`cf deploy` yourself (`wrangler deploy` also still works — see "Local
+development" below).
 
 ### 2. Create your own KV namespace for coverage memory
 
-`wrangler.json`'s `kv_namespaces` entry ships with the real namespace ID
+`cloudflare.config.ts`'s `COVERAGE` binding ships with the real namespace ID
 from this repo's own deployed account, since KV namespace IDs are
 account-scoped and a template can't meaningfully commit one that works for
 everyone. If you're deploying your own copy (not just redeploying this
 exact Worker), create your own and swap the ID in:
 
 ```bash
-npx wrangler kv namespace create COVERAGE
-# paste the "id" it prints into wrangler.json's kv_namespaces entry
+cf kv namespaces create COVERAGE
+# paste the "id" it prints into cloudflare.config.ts's COVERAGE binding
+# (wrangler equivalent: npx wrangler kv namespace create COVERAGE, into wrangler.json's kv_namespaces entry)
 ```
 
 The 1-click **Deploy to Cloudflare Workers** button path may provision
@@ -189,8 +238,8 @@ works and is the one this was actually tested against.
 Browser Rendering isn't on by default, so enable it for your account in the
 Cloudflare dashboard (**Workers & Pages → Browser Rendering**) if you
 haven't used it before. Free-tier limits matter here: **10 browser-minutes
-a day, 3 concurrent sessions, 6 requests/minute.** `wrangler.json` now
-defaults `MAX_PAGES` and `ACTION_BUDGET` to 10 and 10 (both hard-capped at
+a day, 3 concurrent sessions, 6 requests/minute.** `cloudflare.config.ts`
+now defaults `MAX_PAGES` and `ACTION_BUDGET` to 10 and 10 (both hard-capped at
 10 in code regardless of what's configured), running once a month instead
 of daily: a once-a-month run can afford to spend a full session's worth of
 budget in one go, rather than rationing a small budget across 30 daily
@@ -269,12 +318,36 @@ Then set everything as secrets (kept out of the committed config on
 purpose — same reasoning as the other two bots):
 
 ```bash
-npx wrangler secret put GITHUB_APP_ID
-npx wrangler secret put GITHUB_APP_PRIVATE_KEY        # full contents of pkcs8-key.pem
-npx wrangler secret put GITHUB_APP_INSTALLATION_ID
-npx wrangler secret put GITHUB_OWNER   # e.g. your GitHub org or username
-npx wrangler secret put GITHUB_REPO    # the repo name, without the owner
-npx wrangler secret put TARGET_URL     # the site to crawl, e.g. https://clawbuilders.club
+cf workers secrets bulk --worker web-qa-jev-agent --body '{
+  "GITHUB_APP_ID": {"type": "secret_text", "text": "<your App ID>"},
+  "GITHUB_APP_INSTALLATION_ID": {"type": "secret_text", "text": "<your installation ID>"},
+  "GITHUB_OWNER": {"type": "secret_text", "text": "<your GitHub org or username>"},
+  "GITHUB_REPO": {"type": "secret_text", "text": "<the repo name, without the owner>"},
+  "TARGET_URL": {"type": "secret_text", "text": "https://clawbuilders.club"}
+}'
+```
+
+Swap `web-qa-jev-agent` for your own Worker's name throughout if you renamed
+it. `--worker`/`--script-name` wasn't reliably inferred from
+`cloudflare.config.ts` as of `cf` v1.0.0-beta.5 — pass it explicitly rather
+than assuming it picks up the name from the config file in your directory.
+
+**`GITHUB_APP_PRIVATE_KEY` needs `bulk`'s `--file` form, not `--text`.**
+Neither `cf workers secrets update` nor `bulk`'s own `--text`/`--body`
+flags accept a value except as a literal CLI argument — passing the raw
+key that way exposes it in shell history and `ps` output, exactly what
+this section already warns against. `bulk --file <path>` reads the whole
+merge-patch body from a file instead, so build that file locally without
+the key ever appearing as a command argument:
+
+```bash
+jq -n --rawfile key pkcs8-key.pem \
+  '{"GITHUB_APP_PRIVATE_KEY": {type: "secret_text", text: $key}}' \
+  > /tmp/gh-app-key-patch.json
+cf workers secrets bulk --worker web-qa-jev-agent --file /tmp/gh-app-key-patch.json
+rm /tmp/gh-app-key-patch.json
+# wrangler equivalent (also avoids shell-arg exposure, via stdin):
+#   cat pkcs8-key.pem | npx wrangler secret put GITHUB_APP_PRIVATE_KEY
 ```
 
 > **Never let raw private-key material pass through a chat/AI coding
@@ -288,7 +361,8 @@ npx wrangler secret put TARGET_URL     # the site to crawl, e.g. https://clawbui
 If you turned the webhook on in step 4 above, set the secret it generated:
 
 ```bash
-npx wrangler secret put GITHUB_WEBHOOK_SECRET
+cf workers secrets bulk --worker web-qa-jev-agent --body '{"GITHUB_WEBHOOK_SECRET": {"type": "secret_text", "text": "<the secret you generated above>"}}'
+# wrangler equivalent: npx wrangler secret put GITHUB_WEBHOOK_SECRET
 ```
 
 Then comment `/run-qa` anywhere in the body of any issue or PR on the
@@ -306,21 +380,23 @@ just 404s — without affecting the cron or `/run?token=` triggers.
 ### 6. Set the run-trigger secret
 
 ```bash
-npx wrangler secret put RUN_TOKEN   # any random string
+cf workers secrets bulk --worker web-qa-jev-agent --body '{"RUN_TOKEN": {"type": "secret_text", "text": "<any random string>"}}'
+# wrangler equivalent: npx wrangler secret put RUN_TOKEN
 ```
 
 ### 7. (Optional) Tune the QA goal and engine routing
 
 ```bash
-npx wrangler secret put QA_GOAL   # e.g. "Test the event registration flow end to end"
+cf workers secrets bulk --worker web-qa-jev-agent --body '{"QA_GOAL": {"type": "secret_text", "text": "Test the event registration flow end to end"}}'
+# wrangler equivalent: npx wrangler secret put QA_GOAL
 ```
 
-`CHROMIUM_ONLY_PATTERNS` (a `wrangler.json` var, default empty) is a
+`CHROMIUM_ONLY_PATTERNS` (a `cloudflare.config.ts` var, default empty) is a
 comma-separated list of URL substrings that always route to Chromium
 regardless of what the Jev router decides. Useful for known-authenticated
 paths you don't want the router guessing about.
 
-`REVISIT_RATE` (a `wrangler.json` var, default `0.3`) is the fraction of
+`REVISIT_RATE` (a `cloudflare.config.ts` var, default `0.3`) is the fraction of
 `MAX_PAGES` reserved for regression-checking pages this Worker has crawled
 before, instead of finding new ones. `0` disables it entirely (pure
 exploration, closer to the old behavior); closer to `1` spends most of the
@@ -343,7 +419,8 @@ curl "https://web-qa-jev-agent.<your-subdomain>.workers.dev/run?token=<RUN_TOKEN
 (The deployed Worker's own name/URL is left as `web-qa-jev-agent` on
 purpose — only the repo and package were renamed, so the live URL from
 before this redesign keeps working. Rename the Worker yourself in
-`wrangler.json` and redeploy if you want the URL to match.)
+`cloudflare.config.ts`'s `worker.name` and redeploy if you want the URL to
+match.)
 
 Returns a JSON summary (`pagesVisited`, `flagged`, `filed`, `duplicates`,
 `engineBreakdown`). Check the target repo's Issues tab — anything filed
@@ -355,14 +432,15 @@ plus a screenshot committed under `qa-screenshots/`.
 ```bash
 cp .dev.vars.example .dev.vars   # fill in real values, never commit this file
 npm install
-npm run dev   # wrangler dev --remote — Browser Rendering does NOT work in local mode
+npm run dev   # cf dev — remote resources by default; Browser Rendering does NOT work in local mode
+             # (wrangler equivalent: wrangler dev --remote)
 ```
 
 `npm run typecheck` runs `tsc --noEmit`.
 
 ## Schedule
 
-The cron in `wrangler.json` (`0 14 1 * *`, UTC) runs once a month, on the
+The cron in `cloudflare.config.ts` (`0 14 1 * *`, UTC) runs once a month, on the
 1st. Standard cron has no native "every 4 weeks" (there's no week-counter
 field, only day-of-month/month/day-of-week), so a fixed day each month is
 the practical equivalent, roughly every 4.3 weeks rather than exactly 4.
@@ -372,7 +450,7 @@ re-testing the same few things over and over; running less often but with
 the budget maxed out gets more real coverage per run instead.
 
 **Monthly is a default for this project, not a recommendation for yours.**
-Change `wrangler.json`'s cron to whatever matches how often your own site
+Change `cloudflare.config.ts`'s cron trigger to whatever matches how often your own site
 actually changes: a project shipping multiple times a day probably wants
 weekly or even daily again, now that the coverage memory below (not the
 old budget-less daily loop) is what actually spreads exploration out
