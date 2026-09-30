@@ -28,25 +28,16 @@ reason to hand-roll the raw CDP session negotiation for a beta-only feature.
 
 ## How to probe manually, today
 
-1. **Acquire a lab session** (requires being logged into the account that
-   owns Browser Rendering, via `cf auth login` or `wrangler login`):
-
-   ```sh
-   npm i -g cf
-   cf browser-run devtools browser create --lab --keep-alive 300000
-   ```
-
-   `--keep-alive` is in milliseconds here (300000 = 5 minutes), unlike
-   classic Wrangler's `--keepAlive`, which took seconds — a beta CLI still
-   in flux, worth double-checking against `--help` if this ever stops
-   matching. If you'd rather stick with the proven path:
+1. **Acquire a lab session** (requires `wrangler` logged into the account
+   that owns Browser Rendering, and the `keepAlive` sets how long it stays up
+   in seconds):
 
    ```sh
    npm i -g wrangler@latest
    wrangler browser create --lab --keepAlive 300
    ```
 
-   Either way, this opens a live view of the session in your browser.
+   This opens a live view of the session in your browser.
 
 2. **Navigate to the target page** (e.g. `clawbuilders.club/events/toronto`,
    once WebMCP tools exist there) and open DevTools → Console.

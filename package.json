@@ -2,20 +2,18 @@
   "name": "cloudflare-web-qa-jev-agent",
   "version": "2.0.0",
   "private": true,
-  "type": "module",
   "description": "Cloudflare Worker that acts like a QA tester (Jev-driven Kitesurf/Chromium routing, Jev-picked action loop), triages findings with typesafe/jev, confirms real issues with a vision model, and files deduped GitHub Issues.",
   "scripts": {
-    "dev": "cf dev",
-    "deploy": "cf deploy",
+    "dev": "wrangler dev --remote",
+    "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "cf-typegen": "cf workers types"
+    "cf-typegen": "wrangler types"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.0.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260915.1",
-    "cf": "^1.0.0-beta.5",
     "typescript": "^5.6.2",
     "wrangler": "^4.144.0"
   }
