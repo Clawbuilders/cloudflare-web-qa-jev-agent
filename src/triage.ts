@@ -37,32 +37,52 @@ export async function triage(env: Env, page: PageSignals): Promise<TriageResult>
     actions_attempted: page.actionsAttempted,
   };
 
-  const response = (await env.AI.run("typesafe/jev", {
-    state,
-    questions: {
-      is_real_bug: {
-        type: "noul",
-        instructions:
-          "Given this page's console errors, failed network requests, and page errors, does this look like an actual bug a real user would notice or be affected by — not just benign warnings, ad-blocked trackers, expected redirects, or analytics failures?",
-      },
-      severity: {
-        type: "score",
-        instructions: "If this is a real issue, how severe does it look for a real user?",
-        criteria: SEVERITY_LEVELS,
-      },
-      category: {
-        type: "choice",
-        instructions: "What kind of issue is this, if any?",
-        criteria: {
-          none: "No real issue — signals are benign noise",
-          broken_link_or_404: "A link or resource that 404s or fails to load",
-          api_or_server_error: "A backend/API call returning a 5xx or other server error",
-          javascript_error: "An uncaught JS exception affecting page behavior",
-          content_or_layout_anomaly: "Something in the page text/structure looks wrong",
+  let response: JevResponse;
+  try {
+    response = (await env.AI.run("typesafe/jev", {
+      state,
+      questions: {
+        is_real_bug: {
+          type: "noul",
+          instructions:
+            "Given this page's console errors, failed network requests, and page errors, does this look like an actual bug a real user would notice or be affected by — not just benign warnings, ad-blocked trackers, expected redirects, or analytics failures?",
+        },
+        severity: {
+          type: "score",
+          instructions: "If this is a real issue, how severe does it look for a real user?",
+          criteria: SEVERITY_LEVELS,
+        },
+        category: {
+          type: "choice",
+          instructions: "What kind of issue is this, if any?",
+          criteria: {
+            none: "No real issue — signals are benign noise",
+            broken_link_or_404: "A link or resource that 404s or fails to load",
+            api_or_server_error: "A backend/API call returning a 5xx or other server error",
+            javascript_error: "An uncaught JS exception affecting page behavior",
+            content_or_layout_anomaly: "Something in the page text/structure looks wrong",
+          },
         },
       },
-    },
-  })) as unknown as JevResponse;
+    })) as unknown as JevResponse;
+  } catch (err) {
+    console.error(`Jev triage call itself threw for ${page.url}:`, err);
+    return { url: page.url, isRealBug: 0, severity: 0, severityLabel: "Cosmetic", category: "triage-failed" };
+  }
+
+  if (
+    !response?.answers?.is_real_bug ||
+    typeof response.answers.is_real_bug.noul !== "number" ||
+    typeof response.answers.severity?.score !== "number" ||
+    typeof response.answers.category?.choice !== "string"
+  ) {
+    // Fail loudly in the logs (this is a real, previously-seen shape
+    // mismatch — see cloudflare-web-qa-jev-agent's README/CHANGELOG),
+    // but don't let one page's malformed response take down every other
+    // page's results via Promise.all in pipeline.ts.
+    console.error(`Jev triage returned an unexpected shape for ${page.url}:`, JSON.stringify(response));
+    return { url: page.url, isRealBug: 0, severity: 0, severityLabel: "Cosmetic", category: "triage-failed" };
+  }
 
   return {
     url: page.url,

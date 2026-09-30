@@ -179,18 +179,35 @@ npm i -g cf         # or: npm i -g wrangler
 cf auth login       # or: wrangler login
 ```
 
-> **⚠️ `cf workers secrets update` replaces the Worker's *entire* secret
-> set with just the one secret you're setting — it does not patch.**
-> Confirmed the hard way: setting a single secret via `update` on a Worker
-> that already had 7 others silently dropped all 7, breaking GitHub auth
-> and the webhook trigger until they were restored. `update` issues a
-> `PUT` to the plain `/secrets` collection endpoint (full replace); the
-> fix is `cf workers secrets bulk`, which issues a `PATCH` to
-> `/secrets-bulk` (RFC 7396 JSON Merge Patch — "secrets not included in
-> the request are left unchanged", straight from its own `--help`). Every
-> secret command below uses `bulk` for exactly this reason — do not
-> substitute `update` for convenience, even for a single secret, on a
-> Worker that already has others set.
+> **⚠️ The bigger trap: `cf deploy` itself wipes any secret not declared in
+> `cloudflare.config.ts` — every single deploy, not just when touching
+> secrets.** Confirmed the hard way: after deploying with a config whose
+> `env` block declared zero secrets, `wrangler secret list` came back `[]`
+> — all 8 secrets gone, GitHub auth and the webhook trigger both broken.
+> `cf` treats the config's declared secret set as the *desired state* and
+> reconciles the live Worker to match it on every deploy, unlike classic
+> Wrangler, where a secret set once just persists across deploys forever
+> regardless of `wrangler.json`. **The fix**: every secret this Worker
+> uses must have a matching `bindings.secret()` entry in
+> `cloudflare.config.ts`'s `env` block (see that file — it's already done
+> for all 8 required secrets in this repo). `bindings.secret()` takes no
+> options and has no "optional" mode, though — declaring one makes `cf
+> deploy` *refuse to deploy at all* if it isn't set, which is why the
+> genuinely-optional `QA_GOAL` (§7) is deliberately left undeclared: if
+> you set it, know that the next unrelated `cf deploy` (no code change,
+> just re-running deploy) will silently drop it again, and you'll need to
+> re-set it afterward.
+>
+> **On top of that**, `cf workers secrets update` replaces the Worker's
+> *entire* secret set with just the one secret you're setting — it does
+> not patch, even once secrets are properly declared. Confirmed
+> separately: setting one secret via `update` on a Worker that already had
+> 7 others silently dropped all 7. `update` issues a `PUT` to the plain
+> `/secrets` collection endpoint (full replace); the fix is `cf workers
+> secrets bulk`, which issues a `PATCH` to `/secrets-bulk` (RFC 7396 JSON
+> Merge Patch — "secrets not included in the request are left unchanged",
+> straight from its own `--help`). Every secret command below uses `bulk`
+> for exactly this reason.
 
 ### 1. Deploy
 
