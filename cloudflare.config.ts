@@ -43,13 +43,15 @@ export default defineConfig({
 			GITHUB_OWNER: bindings.secret(),
 			GITHUB_REPO: bindings.secret(),
 			TARGET_URL: bindings.secret(),
-			GITHUB_WEBHOOK_SECRET: bindings.secret(),
 			RUN_TOKEN: bindings.secret(),
-			// QA_GOAL (optional, §7) is deliberately NOT declared here:
-			// bindings.secret() has no "optional" mode — every declared secret
-			// becomes required, and `cf deploy` refuses to run at all if a
-			// declared one isn't set. See README's Setup section for what that
-			// means if you do set QA_GOAL.
+			// GITHUB_WEBHOOK_SECRET (optional, §5b) and QA_GOAL (optional, §7) are
+			// deliberately NOT declared here: bindings.secret() has no "optional"
+			// mode — every declared secret becomes required, and `cf deploy`
+			// refuses to run at all if a declared one isn't set. Both features are
+			// genuinely opt-in in the code (webhook.ts 404s and triage.ts falls
+			// back to a generic goal when unset), so forcing either to exist just
+			// to get any deploy through would be wrong. See README's Setup section
+			// for what that means if you do set either of them.
 		},
 	},
 });

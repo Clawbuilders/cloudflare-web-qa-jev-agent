@@ -208,12 +208,79 @@ cf auth login       # or: wrangler login
 > Merge Patch — "secrets not included in the request are left unchanged",
 > straight from its own `--help`). Every secret command below uses `bulk`
 > for exactly this reason.
+>
+> **A third consequence of the same design, verified directly (both via
+> the CLI and the actual one-click button): a brand-new Worker's *first*
+> deploy needs every required secret value up front, not after.** Since
+> every secret this Worker needs is declared with `bindings.secret()` (so
+> that redeploys don't wipe them — see above), `cf deploy` on a Worker
+> that doesn't exist yet refuses outright: *"This Worker does not exist
+> yet, so secrets cannot be set in advance with `wrangler secret put`...
+> supply them via a secrets file."* The **Deploy to Cloudflare Workers**
+> button behaves the same way for the same reason — every declared secret
+> shows up as a required field on its one setup screen, and the button's
+> own form validation (not a server error) refuses to submit until all of
+> them are filled in. Practically: **gather every value below (steps 1-4)
+> before you attempt to deploy in step 5**, whichever path you use — this
+> is the opposite order from a classic-Wrangler project, where deploying
+> first and setting secrets afterward always worked fine.
 
-### 1. Deploy
+### 1. Create a GitHub App
 
-Click the **Deploy to Cloudflare Workers** button above, or clone and run
-`cf deploy` yourself (`wrangler deploy` also still works — see "Local
-development" below).
+This Worker posts as a real bot identity — a GitHub App, not a personal
+access token. No PAT fallback: `src/github-app-auth.ts` JWT-signs with the
+App's private key (Web Crypto, `crypto.subtle`, no npm deps) and exchanges
+it for a short-lived installation token on every call. Same approach as
+[`cloudflare-code-reviewer`'s Advanced Track](https://github.com/Clawbuilders/cloudflare-code-reviewer).
+
+Outbound calls (listing/creating/commenting on Issues) don't need a
+webhook — the App's own REST auth handles that. Only set up the webhook
+step below if you also want [step 6's comment trigger](#6-optional-trigger-a-run-by-commenting-run-qa),
+otherwise leave it inactive.
+
+1. Register under your **org** (not personal account):
+   `github.com/organizations/<org>/settings/apps/new`.
+2. Name it without "bot" in the name — GitHub auto-appends `[bot]` in
+   comments/commits (`web-qa-jev-agent` → `web-qa-jev-agent[bot]`).
+3. Skip **Identifying and authorizing users** entirely (delete the empty
+   Redirect URI row).
+4. **Webhook**: leave inactive, *unless* you want step 6's comment trigger —
+   in that case: Active, URL = `https://<your-worker>.workers.dev/webhook/github`,
+   generate + save the webhook secret immediately (GitHub only shows it
+   once).
+5. **Permissions**: only
+   - Repository permissions → **Issues: Read and write**
+   - Repository permissions → **Contents: Read and write** (for uploading
+     screenshots into `qa-screenshots/`)
+   - If you enabled the webhook in step 4: a **Subscribe to events**
+     checkbox for **Issue comment** appears once the Issues permission is
+     set above — check it, or GitHub delivers nothing, silently, forever
+     (same gotcha the code-reviewer's Advanced Track docs already call out
+     for `pull_request`; diagnose via the App's own **Settings → Advanced
+     → Recent Deliveries**, not the Worker's logs, if this happens to you).
+6. **Where can this be installed?** → Only on this account.
+7. **Create GitHub App**, then **Generate a private key** (downloads a
+   `.pem`) and note the **App ID** on the same page.
+8. **Install App** on just the target repo. The installation URL's last
+   path segment is the **installation ID** you'll need below (e.g.
+   `github.com/organizations/<org>/settings/installations/12345678` → `12345678`).
+
+Convert the key format — GitHub gives you PKCS#1, Cloudflare's Web Crypto
+needs PKCS#8:
+```bash
+openssl pkcs8 -topk8 -nocrypt -in downloaded-key.pem -out pkcs8-key.pem
+```
+
+You now have everything this step needs: the **App ID**, the converted
+**private key file**, and the **installation ID**. Don't set them as
+secrets yet — that happens together with every other value in step 5, as
+part of the very first deploy.
+
+> **Never let raw private-key material pass through a chat/AI coding
+> assistant** — copy it directly from the local file into the terminal
+> prompt or the Cloudflare dashboard. If it ever leaks into a session
+> anyway, treat it as compromised and rotate immediately (generating a new
+> private key invalidates the old one instantly).
 
 ### 2. Create your own KV namespace for coverage memory
 
@@ -268,86 +335,56 @@ Meta's license for it — do this once in the dashboard's Workers AI model
 page before your first real run, or the escalation step will fail on every
 flagged page.
 
-### 5. Create a GitHub App, and point the Worker at your repos
+### 5. Decide your remaining values, then deploy
 
-This Worker posts as a real bot identity — a GitHub App, not a personal
-access token. No PAT fallback: `src/github-app-auth.ts` JWT-signs with the
-App's private key (Web Crypto, `crypto.subtle`, no npm deps) and exchanges
-it for a short-lived installation token on every call. Same approach as
-[`cloudflare-code-reviewer`'s Advanced Track](https://github.com/Clawbuilders/cloudflare-code-reviewer).
+You need four more plain values before deploying — none of these are
+created anywhere, just decided:
 
-Outbound calls (listing/creating/commenting on Issues) don't need a
-webhook — the App's own REST auth handles that. Only set up the webhook
-step below if you also want [§5b's comment trigger](#5b-optional-trigger-a-run-by-commenting-run-qa),
-otherwise leave it inactive.
+- **`GITHUB_OWNER`** — your GitHub org or username (the one that owns the
+  App from step 1).
+- **`GITHUB_REPO`** — the repo Issues should be filed on, without the
+  owner (e.g. `clawbuilders-main`, not `Clawbuilders/clawbuilders-main` —
+  it's easy to grab the wrong one if you copy a folder name instead of
+  checking `git remote -v`).
+- **`TARGET_URL`** — the site to crawl, e.g. `https://clawbuilders.club`.
+- **`RUN_TOKEN`** — any random string, gates the manual `/run` route:
+  `openssl rand -hex 24` works fine.
 
-1. Register under your **org** (not personal account):
-   `github.com/organizations/<org>/settings/apps/new`.
-2. Name it without "bot" in the name — GitHub auto-appends `[bot]` in
-   comments/commits (`web-qa-jev-agent` → `web-qa-jev-agent[bot]`).
-3. Skip **Identifying and authorizing users** entirely (delete the empty
-   Redirect URI row).
-4. **Webhook**: leave inactive, *unless* you want §5b's comment trigger —
-   in that case: Active, URL = `https://<your-worker>.workers.dev/webhook/github`,
-   generate + save the webhook secret immediately (GitHub only shows it
-   once).
-5. **Permissions**: only
-   - Repository permissions → **Issues: Read and write**
-   - Repository permissions → **Contents: Read and write** (for uploading
-     screenshots into `qa-screenshots/`)
-   - If you enabled the webhook in step 4: a **Subscribe to events**
-     checkbox for **Issue comment** appears once the Issues permission is
-     set above — check it, or GitHub delivers nothing, silently, forever
-     (same gotcha the code-reviewer's Advanced Track docs already call out
-     for `pull_request`; diagnose via the App's own **Settings → Advanced
-     → Recent Deliveries**, not the Worker's logs, if this happens to you).
-6. **Where can this be installed?** → Only on this account.
-7. **Create GitHub App**, then **Generate a private key** (downloads a
-   `.pem`) and note the **App ID** on the same page.
-8. **Install App** on just the target repo. The installation URL's last
-   path segment is the **installation ID** you'll need below (e.g.
-   `github.com/organizations/<org>/settings/installations/12345678` → `12345678`).
+Now deploy — **choose one path**:
 
-Convert the key format — GitHub gives you PKCS#1, Cloudflare's Web Crypto
-needs PKCS#8:
+**A. One-click button.** Click **Deploy to Cloudflare Workers** above. Its
+setup screen shows a field for every required secret (`GITHUB_APP_ID`,
+`GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_OWNER`,
+`GITHUB_REPO`, `TARGET_URL`, `RUN_TOKEN`) plus a KV namespace picker with a
+**+ Create new** option — fill in every field (the button won't let you
+submit with any left blank; that's its own native form validation, not a
+network round-trip) and click **Deploy**.
+
+**B. CLI, with a secrets file.** A bare `cf deploy` on a Worker that
+doesn't exist yet fails on purpose — verified directly: *"This Worker does
+not exist yet, so secrets cannot be set in advance... supply them via a
+secrets file."* Build one and deploy with it:
+
+```bash
+cat > secrets.env << 'EOF'
+GITHUB_APP_ID=<your App ID>
+GITHUB_APP_INSTALLATION_ID=<your installation ID>
+GITHUB_OWNER=<your GitHub org or username>
+GITHUB_REPO=<the repo name, without the owner>
+TARGET_URL=https://clawbuilders.club
+RUN_TOKEN=<the random string you generated above>
+EOF
+```
+
+`GITHUB_APP_PRIVATE_KEY` needs its own file, converted from what GitHub
+gave you (PKCS#1) to what Cloudflare's Web Crypto needs (PKCS#8) — do this
+before deploying:
+
 ```bash
 openssl pkcs8 -topk8 -nocrypt -in downloaded-key.pem -out pkcs8-key.pem
-```
-
-Then set everything as secrets (kept out of the committed config on
-purpose — same reasoning as the other two bots):
-
-```bash
-cf workers secrets bulk --worker web-qa-jev-agent --body '{
-  "GITHUB_APP_ID": {"type": "secret_text", "text": "<your App ID>"},
-  "GITHUB_APP_INSTALLATION_ID": {"type": "secret_text", "text": "<your installation ID>"},
-  "GITHUB_OWNER": {"type": "secret_text", "text": "<your GitHub org or username>"},
-  "GITHUB_REPO": {"type": "secret_text", "text": "<the repo name, without the owner>"},
-  "TARGET_URL": {"type": "secret_text", "text": "https://clawbuilders.club"}
-}'
-```
-
-Swap `web-qa-jev-agent` for your own Worker's name throughout if you renamed
-it. `--worker`/`--script-name` wasn't reliably inferred from
-`cloudflare.config.ts` as of `cf` v1.0.0-beta.5 — pass it explicitly rather
-than assuming it picks up the name from the config file in your directory.
-
-**`GITHUB_APP_PRIVATE_KEY` needs `bulk`'s `--file` form, not `--text`.**
-Neither `cf workers secrets update` nor `bulk`'s own `--text`/`--body`
-flags accept a value except as a literal CLI argument — passing the raw
-key that way exposes it in shell history and `ps` output, exactly what
-this section already warns against. `bulk --file <path>` reads the whole
-merge-patch body from a file instead, so build that file locally without
-the key ever appearing as a command argument:
-
-```bash
-jq -n --rawfile key pkcs8-key.pem \
-  '{"GITHUB_APP_PRIVATE_KEY": {type: "secret_text", text: $key}}' \
-  > /tmp/gh-app-key-patch.json
-cf workers secrets bulk --worker web-qa-jev-agent --file /tmp/gh-app-key-patch.json
-rm /tmp/gh-app-key-patch.json
-# wrangler equivalent (also avoids shell-arg exposure, via stdin):
-#   cat pkcs8-key.pem | npx wrangler secret put GITHUB_APP_PRIVATE_KEY
+echo "GITHUB_APP_PRIVATE_KEY=$(cat pkcs8-key.pem)" >> secrets.env
+cf deploy --secrets-file secrets.env
+rm secrets.env pkcs8-key.pem
 ```
 
 > **Never let raw private-key material pass through a chat/AI coding
@@ -356,35 +393,48 @@ rm /tmp/gh-app-key-patch.json
 > anyway, treat it as compromised and rotate immediately (generating a new
 > private key invalidates the old one instantly).
 
-### 5b. (Optional) Trigger a run by commenting "/run-qa"
+Once this first deploy succeeds, every later `cf deploy` is a plain,
+argument-free `cf deploy` — verified directly that a bare redeploy
+afterward correctly keeps all the secrets you just set, because they're
+each declared with `bindings.secret()` in `cloudflare.config.ts`.
+`wrangler deploy` still works too and never had any of the above problem
+in the first place, since it never required secrets to exist before a
+first deploy — see "Local development" below.
 
-If you turned the webhook on in step 4 above, set the secret it generated:
+### 6. (Optional) Enable a run-on-demand comment trigger
+
+Only relevant if you turned the webhook on in step 1. `GITHUB_WEBHOOK_SECRET`
+is deliberately **not** one of the required secrets above — it's genuinely
+optional (`src/webhook.ts` 404s cleanly without it), and `bindings.secret()`
+has no "optional" mode, so declaring it would force everyone to set it just
+to get any deploy through. Set it any time after your first successful
+deploy:
 
 ```bash
-cf workers secrets bulk --worker web-qa-jev-agent --body '{"GITHUB_WEBHOOK_SECRET": {"type": "secret_text", "text": "<the secret you generated above>"}}'
+cf workers secrets bulk --worker web-qa-jev-agent --body '{"GITHUB_WEBHOOK_SECRET": {"type": "secret_text", "text": "<the secret you generated in step 1>"}}'
 # wrangler equivalent: npx wrangler secret put GITHUB_WEBHOOK_SECRET
 ```
 
 Then comment `/run-qa` anywhere in the body of any issue or PR on the
-target repo — `src/webhook.ts` verifies the delivery's
-`X-Hub-Signature-256` against that secret, checks the commenter's
-`author_association` is `OWNER`/`MEMBER`/`COLLABORATOR` (a run costs real
-Browser Rendering + Workers AI usage, so it's gated to people with write
-access, not every public commenter), and kicks off the same pipeline the
-cron runs — then comments back on that issue/PR with the result once it
-finishes (page count, findings, issues filed/matched).
+target repo — the webhook verifies the delivery's `X-Hub-Signature-256`
+against that secret, checks the commenter's `author_association` is
+`OWNER`/`MEMBER`/`COLLABORATOR` (a run costs real Browser Rendering +
+Workers AI usage, so it's gated to people with write access, not every
+public commenter), and kicks off the same pipeline the cron runs — then
+comments back on that issue/PR with the result once it finishes (page
+count, findings, issues filed/matched).
 
-Leaving `GITHUB_WEBHOOK_SECRET` unset disables this entirely — `/webhook/github`
-just 404s — without affecting the cron or `/run?token=` triggers.
-
-### 6. Set the run-trigger secret
-
-```bash
-cf workers secrets bulk --worker web-qa-jev-agent --body '{"RUN_TOKEN": {"type": "secret_text", "text": "<any random string>"}}'
-# wrangler equivalent: npx wrangler secret put RUN_TOKEN
-```
+**Because it's undeclared, not just unset, a plain `cf deploy` after you've
+set it will silently drop it again** — same mechanism as the "bigger trap"
+above, just deliberately accepted here rather than fixed, since there's no
+way to declare an optional secret. Re-run the `bulk` command above after
+any deploy that happens to follow setting this one.
 
 ### 7. (Optional) Tune the QA goal and engine routing
+
+`QA_GOAL` has the exact same undeclared-on-purpose tradeoff as
+`GITHUB_WEBHOOK_SECRET` above — set any time after your first deploy, but
+know a later plain `cf deploy` will drop it again:
 
 ```bash
 cf workers secrets bulk --worker web-qa-jev-agent --body '{"QA_GOAL": {"type": "secret_text", "text": "Test the event registration flow end to end"}}'
@@ -403,14 +453,7 @@ exploration, closer to the old behavior); closer to `1` spends most of the
 budget re-verifying known ground. `0.3` means roughly a third of a run's
 pages are deliberate re-checks and the rest are biased toward new ones.
 
-### 8. Deploy
-
-```bash
-npm install
-npm run deploy
-```
-
-### 9. Verify
+### 8. Verify
 
 ```bash
 curl "https://web-qa-jev-agent.<your-subdomain>.workers.dev/run?token=<RUN_TOKEN>"
